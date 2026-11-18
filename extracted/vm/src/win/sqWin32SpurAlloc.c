@@ -218,10 +218,15 @@ permSpaceWriteFault(PEXCEPTION_POINTERS info)
 	 || record->ExceptionInformation[0] != 1 /* write */)
 		return EXCEPTION_CONTINUE_SEARCH;
 	address = (char *) record->ExceptionInformation[1];
-	if (address < permMapStart || address >= permMapEnd)
+	if (address < permMapStart || address >= permMapEnd) {
+		if (permMapStart != NULL && address >= permMapStart - 0x1000000 && address < permMapEnd + 0x1000000)
+			logError("Write fault at %p next to the perm space view [%p, %p), not handled", address, permMapStart, permMapEnd);
 		return EXCEPTION_CONTINUE_SEARCH;
-	if (!VirtualProtect((void *) ((usqIntptr_t) address & ~(usqIntptr_t) 4095), 4096, PAGE_WRITECOPY, &oldProtection))
+	}
+	if (!VirtualProtect((void *) ((usqIntptr_t) address & ~(usqIntptr_t) 4095), 4096, PAGE_WRITECOPY, &oldProtection)) {
+		logError("Write fault at %p in the perm space view: VirtualProtect failed, error %lu", address, GetLastError());
 		return EXCEPTION_CONTINUE_SEARCH;
+	}
 	InterlockedIncrement(&permMapWriteFaults);
 	return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -248,7 +253,9 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 	if (lazyCommit) {
 		/* Install the handler before the view exists, so that no write can miss it. */
 		permMapStart = (char *) address;
-		permMapEnd = (char *) address + size;
+		/* The view covers whole pages: the last page goes past size (zero-filled), and the VM
+		 * writes there too (permSpaceFreeStart is address + size). */
+		permMapEnd = (char *) (((usqIntptr_t) address + size + 4095) & ~(usqIntptr_t) 4095);
 		if (AddVectoredExceptionHandler(1, permSpaceWriteFault) == NULL) {
 			logErrorFromGetLastError("Could not install the perm space write fault handler");
 			CloseHandle(mapping);
