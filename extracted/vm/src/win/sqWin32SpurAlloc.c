@@ -195,7 +195,35 @@ int
 sqShouldMapPermSpace(void)
 {
 	char *value = getenv("PHARO_MAP_PERM_SPACE");
-	return value != NULL && value[0] == '1';
+	return value != NULL && (value[0] == '1' || value[0] == '2');
+}
+
+/* PHARO_MAP_PERM_SPACE=2: the view is mapped read-only, which charges almost no commit, and a
+ * write fault in it makes the page copy-on-write (PAGE_WRITECOPY, which charges commit for that
+ * page only), then the write is retried. Writes by the kernel (e.g. ReadFile into a perm object)
+ * do not fault: they fail with ERROR_NOACCESS. */
+static char *permMapStart = NULL;
+static char *permMapEnd = NULL;
+static volatile LONG permMapWriteFaults = 0;
+
+static LONG CALLBACK
+permSpaceWriteFault(PEXCEPTION_POINTERS info)
+{
+	PEXCEPTION_RECORD record = info->ExceptionRecord;
+	char *address;
+	DWORD oldProtection;
+
+	if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION
+	 || record->NumberParameters < 2
+	 || record->ExceptionInformation[0] != 1 /* write */)
+		return EXCEPTION_CONTINUE_SEARCH;
+	address = (char *) record->ExceptionInformation[1];
+	if (address < permMapStart || address >= permMapEnd)
+		return EXCEPTION_CONTINUE_SEARCH;
+	if (!VirtualProtect((void *) ((usqIntptr_t) address & ~(usqIntptr_t) 4095), 4096, PAGE_WRITECOPY, &oldProtection))
+		return EXCEPTION_CONTINUE_SEARCH;
+	InterlockedIncrement(&permMapWriteFaults);
+	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 int
@@ -203,6 +231,8 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 {
 	HANDLE file, mapping;
 	void *view;
+	char *mode = getenv("PHARO_MAP_PERM_SPACE");
+	int lazyCommit = mode != NULL && mode[0] == '2';
 
 	file = CreateFileA(fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE) {
@@ -215,17 +245,32 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 		logErrorFromGetLastError("Could not create the perm space file mapping");
 		return 0;
 	}
-	view = MapViewOfFileEx(mapping, FILE_MAP_COPY, 0, 0, size, address);
+	if (lazyCommit) {
+		/* Install the handler before the view exists, so that no write can miss it. */
+		permMapStart = (char *) address;
+		permMapEnd = (char *) address + size;
+		if (AddVectoredExceptionHandler(1, permSpaceWriteFault) == NULL) {
+			logErrorFromGetLastError("Could not install the perm space write fault handler");
+			CloseHandle(mapping);
+			permMapStart = permMapEnd = NULL;
+			return 0;
+		}
+	}
+	view = MapViewOfFileEx(mapping, lazyCommit ? FILE_MAP_READ : FILE_MAP_COPY, 0, 0, size, address);
 	/* The view keeps the mapping alive. */
 	CloseHandle(mapping);
 	if (view != address) {
 		if (view != NULL) {
 			UnmapViewOfFile(view);
 		}
+		/* The handler stays installed but never matches an empty range. */
+		permMapStart = permMapEnd = NULL;
 		logErrorFromGetLastError("Could not map the perm space file at its address");
 		return 0;
 	}
-	logInfo("Perm space mapped copy-on-write at %p (%lld bytes) from %s", address, (long long) size, fileName);
+	logInfo("Perm space mapped %s at %p (%lld bytes) from %s",
+		lazyCommit ? "read-only, copy-on-write on first write" : "copy-on-write",
+		address, (long long) size, fileName);
 	return 1;
 }
 
