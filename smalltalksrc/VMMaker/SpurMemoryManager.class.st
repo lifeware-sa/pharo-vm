@@ -11582,8 +11582,11 @@ SpurMemoryManager >> recreateFromPermSpaceRememberedSet [
 		ObjectsDo: [ :aPermSpaceObject | 
 			| slotIndex referenced numPointerSlots refersNewSpace refersOldSpace |
 	
-		"We clear the bit of all remembered objects, it will be recalculated"
-		self setIsRememberedOf: aPermSpaceObject to: false.	
+		"We clear the bit of all remembered objects, it will be recalculated.
+		 Only write when it is set: perm space may be mapped copy-on-write, and an unconditional
+		 store copies every page of it after any become that involves a perm object."
+		(self isRemembered: aPermSpaceObject) ifTrue:
+			[ self setIsRememberedOf: aPermSpaceObject to: false ].
 		numPointerSlots := self numPointerSlotsOf: aPermSpaceObject.	
 		
 		refersNewSpace := false.
