@@ -57,6 +57,8 @@
 #include "sqaio.h"
 #include "pharovm/debug.h"
 
+EXPORT(void) sqEnsurePermWritable(void *start, size_t size);
+
 #ifdef ACORN
 
 # include <time.h>
@@ -1277,6 +1279,7 @@ sqInt sqSocketReceiveDataBufCount(SocketPtr s, char *buf, sqInt bufSize)
     {
       /* --- UDP/RAW --- */
       socklen_t addrSize= sizeof(SOCKETPEER(s));
+      sqEnsurePermWritable(buf, bufSize);
       if ((nread= recvfrom(SOCKET(s), buf, bufSize, 0, (struct sockaddr *)&SOCKETPEER(s), &addrSize)) <= 0) {
 
       lastError = getLastSocketError();
@@ -1294,6 +1297,7 @@ sqInt sqSocketReceiveDataBufCount(SocketPtr s, char *buf, sqInt bufSize)
   else
     {
       /* --- TCP --- */
+      sqEnsurePermWritable(buf, bufSize);
       if ((nread= recv(SOCKET(s), buf, bufSize, 0)) <= 0) {
           lastError = getLastSocketError();
 
@@ -1391,7 +1395,9 @@ sqInt sqSocketReceiveUDPDataBufCountaddressportmoreFlag(SocketPtr s, char *buf, 
       logTrace( "recvFrom(%d)\n", SOCKET(s));
       memset(&saddr, 0, sizeof(saddr));
       { 
-	int nread= recvfrom(SOCKET(s), buf, bufSize, 0, (struct sockaddr *)&saddr, &addrSize);
+	int nread;
+	sqEnsurePermWritable(buf, bufSize);
+	nread= recvfrom(SOCKET(s), buf, bufSize, 0, (struct sockaddr *)&saddr, &addrSize);
 	if (nread >= 0)
 	  {
 	    *address= ntohl(saddr.sin_addr.s_addr);
@@ -2491,7 +2497,9 @@ sqInt sqSocketReceiveUDPDataBufCount(SocketPtr s, char *buf, sqInt bufSize)
 
 	  socklen_t saddrSize= sizeof(SOCKETPEER(s));
 
-      int nread= recvfrom(SOCKET(s), buf, bufSize, 0, &SOCKETPEER(s).sa, &saddrSize);
+      int nread;
+      sqEnsurePermWritable(buf, bufSize);
+      nread= recvfrom(SOCKET(s), buf, bufSize, 0, &SOCKETPEER(s).sa, &saddrSize);
 
       lastError = getLastSocketError();
 

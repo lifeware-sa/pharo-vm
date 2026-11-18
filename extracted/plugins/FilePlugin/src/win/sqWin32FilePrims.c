@@ -32,6 +32,8 @@
 #include "sqWin32File.h"
 
 #include "pharovm/debug.h"
+
+EXPORT(void) sqEnsurePermWritable(void *start, size_t size);
 #include "sqaio.h"
 #include <io.h>
 
@@ -411,6 +413,8 @@ size_t sqFileReadIntoAt(SQFile *f, size_t count, char* byteArrayIndex, size_t st
 
   if (!sqFileValid(f))
     FAIL();
+  /* The kernel writes the bytes: a read-only perm page would make it fail. */
+  sqEnsurePermWritable(byteArrayIndex + startIndex, count);
   if (f->isStdioStream){
 
 	if(checkIfReadConsoleWillBlock(FILE_HANDLE(f))){

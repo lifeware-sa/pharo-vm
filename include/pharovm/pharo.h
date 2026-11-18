@@ -87,3 +87,6 @@ void setMaxStacksToPrint(sqInt anInteger);
  * sqMapPermSpaceFile maps the file private (copy-on-write) at exactly address; answers 1 on success. */
 int sqShouldMapPermSpace(void);
 int sqMapPermSpaceFile(char *fileName, void *address, size_t size);
+/* Call before the kernel writes into object memory (ReadFile, recv...): with PHARO_MAP_PERM_SPACE=2 the
+ * perm space view is read-only and a kernel write into it fails instead of faulting. */
+EXPORT(void) sqEnsurePermWritable(void *start, size_t size);

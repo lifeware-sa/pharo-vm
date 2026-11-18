@@ -231,6 +231,23 @@ permSpaceWriteFault(PEXCEPTION_POINTERS info)
 	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+/* Before the kernel writes into [start, start + size): make the pages of the range that are in the
+ * read-only perm view copy-on-write, by touching them from user mode (the write fault goes to
+ * permSpaceWriteFault, on the C stack here). The written value is the one already there. */
+EXPORT(void)
+sqEnsurePermWritable(void *start, size_t size)
+{
+	volatile char *page;
+	char *first = (char *) start, *end = (char *) start + size;
+
+	if (permMapStart == NULL || size == 0 || end <= permMapStart || first >= permMapEnd)
+		return;
+	if (first < permMapStart) first = permMapStart;
+	if (end > permMapEnd) end = permMapEnd;
+	for (page = (volatile char *) ((usqIntptr_t) first & ~(usqIntptr_t) 4095); page < end; page += 4096)
+		*page = *page;
+}
+
 int
 sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 {

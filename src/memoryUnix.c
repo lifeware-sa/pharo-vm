@@ -238,3 +238,9 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 	logInfo("Perm space mapped copy-on-write at %p (%lld bytes) from %s", address, (long long) size, fileName);
 	return 1;
 }
+
+/* With a MAP_PRIVATE mapping the kernel copies a page it writes to: nothing to do. */
+EXPORT(void)
+sqEnsurePermWritable(void *start, size_t size)
+{
+}
