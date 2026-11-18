@@ -82,3 +82,8 @@ EXPORT(int) isVMRunOnWorkerThread();
 void setMaxStacksToPrint(sqInt anInteger);
 
 #define allocateMemoryBaseAddress(desiredSize, baseAddress) sqAllocateMemory(desiredSize, desiredSize, baseAddress)
+
+/* Copy-on-write mapping of a composed image's perm space data file (opt-in, PHARO_MAP_PERM_SPACE=1).
+ * sqMapPermSpaceFile maps the file private (copy-on-write) at exactly address; answers 1 on success. */
+int sqShouldMapPermSpace(void);
+int sqMapPermSpaceFile(char *fileName, void *address, size_t size);

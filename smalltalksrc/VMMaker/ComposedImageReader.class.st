@@ -198,6 +198,37 @@ ComposedImageReader >> readMetadataFromFileName: fullFileName [
 ]
 
 { #category : 'perm - space' }
+ComposedImageReader >> mapPermanentSpaceFromImage: imageFileName at: baseAddress bytes: dataSize [
+
+	"Map the perm space data file copy-on-write at its saved address instead of reading it,
+	 so that VMs started on the same image share its pages until they write them.
+	 Opt-in: the platform says yes (PHARO_MAP_PERM_SPACE=1) and perm space is not allocated yet.
+	 The mapped space is exactly full: extending it needs memory adjacent to the view.
+	 Answer whether the file is mapped; if not, the caller reads it as before."
+
+	<inline: false>
+	<var: #baseAddress type: #'void*'>
+	<var: #dataSize type: #'size_t'>
+	<var: #fileName type: #'char *'>
+	| fileName |
+
+	self simulationOnly: [ ^ false ].
+
+	self sqShouldMapPermSpace ifFalse: [ ^ false ].
+	objectMemory getMemoryMap permSpaceStart = 0 ifFalse: [ ^ false ].
+
+	"A statement of its own: permSpaceDataFileInImage: is inlined and does not translate as an argument."
+	fileName := self permSpaceDataFileInImage: imageFileName.
+	(self sqMapPermSpaceFile: fileName _: baseAddress _: dataSize) ifFalse: [ ^ false ].
+
+	objectMemory getMemoryMap
+		permSpaceStart: (self cCoerceSimple: baseAddress to: #sqInt);
+		permSpaceEnd: (self cCoerceSimple: baseAddress to: #sqInt) + dataSize.
+	objectMemory setPermSpaceFreeStart: (self cCoerceSimple: baseAddress to: #sqInt) + dataSize.
+	^ true
+]
+
+{ #category : 'perm - space' }
 ComposedImageReader >> readPermanentSpaceDataFromImage: imageFileName startingAt: startingAddress bytes: bytesToRead [
 
 	^ self
@@ -227,6 +258,9 @@ ComposedImageReader >> readPermanentSpaceFromImageFile: imageFileName header: aH
 	permSpaceMetadata := self readPermanentSpaceMetadataFromImage: imageFileName.
 	oldBase := permSpaceMetadata startAddress.
 	dataSize := permSpaceMetadata dataSize.
+
+	(self mapPermanentSpaceFromImage: imageFileName at: oldBase bytes: dataSize)
+		ifTrue: [ ^ dataSize ].
 
 	(objectMemory getMemoryMap ensureAtLeastPermSpaceOf: dataSize)
 		ifFalse: [ coInterpreter error: 'Could not allocate PermSpace' ].

@@ -185,6 +185,50 @@ sqAllocateMemorySegmentOfSizeAboveAllocatedSizeInto(sqInt size, void *minAddress
 	return 0;
 }
 
+/* Copy-on-write mapping of the perm space data file of a composed image.
+ * Opt-in with the environment variable PHARO_MAP_PERM_SPACE=1.
+ * The pages are shared with every process mapping the same file until a process writes one;
+ * the write then copies that page into the process (FILE_MAP_COPY). Note that Windows charges
+ * commit for the whole view, even for pages that are still shared.
+ */
+int
+sqShouldMapPermSpace(void)
+{
+	char *value = getenv("PHARO_MAP_PERM_SPACE");
+	return value != NULL && value[0] == '1';
+}
+
+int
+sqMapPermSpaceFile(char *fileName, void *address, size_t size)
+{
+	HANDLE file, mapping;
+	void *view;
+
+	file = CreateFileA(fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE) {
+		logErrorFromGetLastError("Could not open the perm space file to map it");
+		return 0;
+	}
+	mapping = CreateFileMappingA(file, NULL, PAGE_WRITECOPY, 0, 0, NULL);
+	CloseHandle(file);
+	if (mapping == NULL) {
+		logErrorFromGetLastError("Could not create the perm space file mapping");
+		return 0;
+	}
+	view = MapViewOfFileEx(mapping, FILE_MAP_COPY, 0, 0, size, address);
+	/* The view keeps the mapping alive. */
+	CloseHandle(mapping);
+	if (view != address) {
+		if (view != NULL) {
+			UnmapViewOfFile(view);
+		}
+		logErrorFromGetLastError("Could not map the perm space file at its address");
+		return 0;
+	}
+	logInfo("Perm space mapped copy-on-write at %p (%lld bytes) from %s", address, (long long) size, fileName);
+	return 1;
+}
+
 /* Deallocate a region of memory previously allocated by
  * sqAllocateMemorySegmentOfSizeAboveAllocatedSizeInto.  Cannot fail.
  */

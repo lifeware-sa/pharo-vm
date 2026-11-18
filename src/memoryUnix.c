@@ -1,6 +1,8 @@
 #include "pharovm/pharo.h"
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <signal.h>
 
 
@@ -198,3 +200,41 @@ sqDeallocateMemorySegmentAtOfSize(void *addr, sqInt sz)
 		logErrorFromErrno("sqDeallocateMemorySegment... munmap");
 }
 
+
+/* Copy-on-write mapping of the perm space data file of a composed image.
+ * Opt-in with the environment variable PHARO_MAP_PERM_SPACE=1.
+ * The pages are shared with every process mapping the same file until a process writes one.
+ */
+int
+sqShouldMapPermSpace(void)
+{
+	char *value = getenv("PHARO_MAP_PERM_SPACE");
+	return value != NULL && value[0] == '1';
+}
+
+int
+sqMapPermSpaceFile(char *fileName, void *address, size_t size)
+{
+	int fd;
+	void *view;
+
+	fd = open(fileName, O_RDONLY);
+	if (fd < 0) {
+		logErrorFromErrno("Could not open the perm space file to map it");
+		return 0;
+	}
+	/* No MAP_FIXED: never replace an existing mapping, only accept the exact address. */
+	view = mmap(address, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+	close(fd);
+	if (view == MAP_FAILED) {
+		logErrorFromErrno("Could not map the perm space file");
+		return 0;
+	}
+	if (view != address) {
+		munmap(view, size);
+		logError("Could not map the perm space file at %p (got %p)", address, view);
+		return 0;
+	}
+	logInfo("Perm space mapped copy-on-write at %p (%lld bytes) from %s", address, (long long) size, fileName);
+	return 1;
+}
