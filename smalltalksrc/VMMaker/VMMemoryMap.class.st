@@ -176,7 +176,7 @@ VMMemoryMap >> allocatePermObjectsSpace [
 	minSize = 0 ifTrue: [ 
 		^ self ].
 
-	minSize := self roundToAllocationSize: minSize.
+	minSize := self roundToPermSpaceAllocationSize: minSize.
 
 	self permSpaceStart: (self 
 		allocateMemory: minSize 
@@ -362,7 +362,7 @@ VMMemoryMap >> extendPermObjectsSpaceBy: aSize [
 
 	| requestedSize |
 
-	requestedSize := self roundToAllocationSize: aSize.
+	requestedSize := self roundToPermSpaceAllocationSize: aSize.
 
 	"Perm space must stay contiguous: take exactly the memory after permSpaceEnd, or nothing.
 	 sqAllocateMemory would put the block elsewhere (on Windows it rounds the address up to 1 MB)
@@ -742,6 +742,24 @@ VMMemoryMap >> roundToAllocationSize: anInteger [
 	rounded < anInteger ifTrue: [ rounded := rounded + pageSize ].
 
 	^ rounded max: self allocationGranularity
+]
+
+{ #category : 'utils' }
+VMMemoryMap >> roundToPermSpaceAllocationSize: anInteger [
+
+	<inline: false>
+
+	"Perm space grows in place, right after permSpaceEnd. On Windows a new allocation can only start
+	 at a multiple of the allocation granularity (64 KB), so keep the size of perm space a multiple of it
+	 (roundToAllocationSize: answers at least 64 KB, but not a multiple). Elsewhere a multiple of the page
+	 size is enough. Both are powers of two. Used for the first allocation and by ensureAtLeastPermSpaceOf:;
+	 extendPermObjectsSpaceMinimum: already asks for multiples of 10 MB."
+
+	| unit |
+
+	unit := self allocationGranularity max: self getpagesize.
+
+	^ (anInteger + unit - 1) bitAnd: (unit - 1) bitInvert64
 ]
 
 { #category : 'initialization' }
