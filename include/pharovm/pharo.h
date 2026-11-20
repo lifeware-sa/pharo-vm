@@ -90,3 +90,7 @@ int sqMapPermSpaceFile(char *fileName, void *address, size_t size);
 /* Call before the kernel writes into object memory (ReadFile, recv...): with PHARO_MAP_PERM_SPACE=2 the
  * perm space view is read-only and a kernel write into it fails instead of faulting. */
 EXPORT(void) sqEnsurePermWritable(void *start, size_t size);
+/* Allocate (read-write) exactly [address, address + size) or nothing, never over an existing mapping.
+ * Answers 1 on success, 0 otherwise. On Windows address must be a multiple of the allocation granularity (64 KB). */
+int sqAllocateMemoryExactlyAt(void *address, usqInt size);
+#define allocateMemoryExactlyAt(desiredSize, address) sqAllocateMemoryExactlyAt((void *)(address), (desiredSize))
