@@ -175,6 +175,8 @@ Spur64BitMemoryManager >> changeClassOf: rcvr to: argClass [
 					[^PrimErrInappropriate]].
 
 	self set: rcvr classIndexTo: classIndex formatTo: newFormat.
+	((self isPermanent: rcvr) and: [ self permObjectNeedsItsClassTraced: rcvr ]) ifTrue: [
+		self getFromPermToOldSpaceRememberedSet rememberWithoutMarkingAsRemembered: rcvr ].
 
 	self assert: (self numBytesOf: rcvr) = (classFormat <= self lastPointerFormat
 											ifTrue: [instSlots * self bytesPerOop]

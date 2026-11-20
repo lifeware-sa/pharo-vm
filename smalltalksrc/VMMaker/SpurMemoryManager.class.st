@@ -3928,7 +3928,8 @@ SpurMemoryManager >> cleanUpPermToOldSpaceRememeberedSet [
 			((self isMarked: referrer) not and: [
 				 (self isForwarded: referrer)
 					 ifTrue: [ self keepPermForwarderInPermToOldSpaceRememberedSet: referrer ]
-					 ifFalse: [ self hasOldReferents: referrer ] ])
+					 ifFalse: [
+						 (self hasOldReferents: referrer) or: [ self permObjectNeedsItsClassTraced: referrer ] ] ])
 				ifTrue:[
 						 self getFromPermToOldSpaceRememberedSet save: referrer at: destIndex.
 						 self setIsMarkedOf: referrer to: true.
@@ -4558,7 +4559,9 @@ SpurMemoryManager >> doMoveToPermSpace: objOop addToRememberedSet: shouldAddToRe
 		ifTrue: [ 
 			refersNewSpace 
 				ifTrue: [ self getFromPermToNewSpaceRememberedSet remember: newObj ]
-				ifFalse: [ refersOldSpace ifTrue: [ self getFromPermToOldSpaceRememberedSet rememberWithoutMarkingAsRemembered: newObj ] ]].
+				ifFalse: [
+					(refersOldSpace or: [ self permObjectNeedsItsClassTraced: newObj ]) ifTrue: [
+						self getFromPermToOldSpaceRememberedSet rememberWithoutMarkingAsRemembered: newObj ] ] ].
 
 	(hash := self rawHashBitsOf: objOop) ~= 0 ifTrue: [ 
 		self setHashBitsOf: newObj to: hash ].
@@ -10442,6 +10445,19 @@ SpurMemoryManager >> pastSpaceStart [
 	^pastSpaceStart
 ]
 
+{ #category : 'perm - space' }
+SpurMemoryManager >> permObjectNeedsItsClassTraced: objOop [
+	"A perm object is scanned by a full GC only if it is in a perm remembered set, and the class index
+	 is not a pointer slot. Answer whether objOop must be scanned anyway because its class is not
+	 permanent: markAndTraceClassOf: must keep that class alive."
+
+	<inline: true>
+	| classIndex |
+	classIndex := self classIndexOf: objOop.
+	^ classIndex > self lastClassIndexPun and: [
+		  (self isPermanent: (self classOrNilAtIndex: classIndex)) not ]
+]
+
 { #category : 'accessing' }
 SpurMemoryManager >> permSpaceFreeStart [
 	^ permSpaceFreeStart
@@ -11601,7 +11617,9 @@ SpurMemoryManager >> recreateFromPermSpaceRememberedSet [
 		
 		refersNewSpace 
 			ifTrue: [ self getFromPermToNewSpaceRememberedSet remember: aPermSpaceObject ]
-			ifFalse: [ refersOldSpace ifTrue: [ self getFromPermToOldSpaceRememberedSet rememberWithoutMarkingAsRemembered: aPermSpaceObject ] ]
+			ifFalse: [
+				(refersOldSpace or: [ self permObjectNeedsItsClassTraced: aPermSpaceObject ]) ifTrue: [
+					self getFromPermToOldSpaceRememberedSet rememberWithoutMarkingAsRemembered: aPermSpaceObject ] ]
 	]
 ]
 
