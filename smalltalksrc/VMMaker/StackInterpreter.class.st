@@ -6467,7 +6467,7 @@ StackInterpreter >> followForwardingPointersInProfileState [
 		[profileProcess := objectMemory followForwarded: profileProcess].
 	(objectMemory isForwarded: profileMethod) ifTrue:
 		[profileMethod := objectMemory followForwarded: profileMethod].
-	(objectMemory isForwarded: profileProcess) ifTrue:
+	(objectMemory isForwarded: profileSemaphore) ifTrue:
 		[profileSemaphore := objectMemory followForwarded: profileSemaphore].
 ]
 
