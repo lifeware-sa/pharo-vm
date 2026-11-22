@@ -19,6 +19,11 @@ sqInt uxMemoryExtraBytesLeft(sqInt includingSwap);
 # endif
 #endif
 
+/* Linux >= 4.17 (glibc >= 2.28); elsewhere (macOS) a requested address is only a hint */
+#if !defined(MAP_FIXED_NOREPLACE)
+# define MAP_FIXED_NOREPLACE 0
+#endif
+
 #define MAP_PROT	(PROT_READ | PROT_WRITE)
 
 #if __OpenBSD__
@@ -219,14 +224,16 @@ sqDeallocateMemorySegmentAtOfSize(void *addr, sqInt sz)
 
 
 /* Copy-on-write mapping of the perm space data file of a composed image.
- * Opt-in with the environment variable PHARO_MAP_PERM_SPACE=1.
+ * Opt-in with the environment variable PHARO_MAP_PERM_SPACE=1 or 2.
  * The pages are shared with every process mapping the same file until a process writes one.
+ * Mode 2 (a read-only view made writable on fault) exists on Windows, which charges commit for
+ * every page of a copy-on-write view; Unix does not, so 2 maps the same way as 1.
  */
 int
 sqShouldMapPermSpace(void)
 {
 	char *value = getenv("PHARO_MAP_PERM_SPACE");
-	return value != NULL && value[0] == '1';
+	return value != NULL && (value[0] == '1' || value[0] == '2');
 }
 
 int
@@ -241,7 +248,7 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 		return 0;
 	}
 	/* No MAP_FIXED: never replace an existing mapping, only accept the exact address. */
-	view = mmap(address, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+	view = mmap(address, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, 0);
 	close(fd);
 	if (view == MAP_FAILED) {
 		logErrorFromErrno("Could not map the perm space file");
