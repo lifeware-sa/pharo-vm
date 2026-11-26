@@ -9204,11 +9204,11 @@ SpurMemoryManager >> markLoopFrom: objOop [
 	 markLoopFrom: objOop while: aBlock"
 
 	<inline: true>
-	| objToScan field index numStrongSlots scanLargeObject |
+	| objToScan field index numStrongSlots scanLargeObject fieldSlots |
 	"Now scan the object, and any remaining objects on the mark stack."
 	objToScan := objOop.
 	"To avoid overflowing the mark stack when we encounter large objects, we
-	 push the obj, then its numStrongSlots, and then index the object from the stack."
+	 push the obj, then the number of its slots left to scan, and pop both to resume scanning it."
 	[
 	(self isImmediate: objToScan)
 		ifTrue: [ scanLargeObject := true ]
@@ -9227,7 +9227,7 @@ SpurMemoryManager >> markLoopFrom: objOop [
 			(self isImmediate: objToScan)
 				ifTrue: [
 					index := self integerValueOf: objToScan.
-					objToScan := self topOfObjStack: markStack ]
+					objToScan := self popObjStack: markStack ]
 				ifFalse: [
 					index := numStrongSlots.
 					self markAndTraceClassOf: objToScan ].
@@ -9242,15 +9242,12 @@ SpurMemoryManager >> markLoopFrom: objOop [
 							         withInitialValue: field ].
 					(self markAndShouldScan: field) ifTrue: [
 						index > 0 ifTrue: [
-							(self topOfObjStack: markStack) ~= objToScan ifTrue: [
-								self push: objToScan onObjStack: markStack ].
+							self push: objToScan onObjStack: markStack.
 							self push: (self integerObjectOf: index) onObjStack: markStack ].
 						objToScan := field.
 						index := -1 ] ] ].
 			index >= 0 ifTrue: [ "if loop terminated without finding an unmarked referent, switch to top of stack."
-				objToScan := self popObjStack: markStack.
-				objToScan = objOop ifTrue: [
-					objToScan := self popObjStack: markStack ] ] ]
+				objToScan := self popObjStack: markStack ] ]
 		ifFalse: [ "scanning a small object. scan, marking, pushing unmarked referents, then switch to the top of the stack."
 			index := numStrongSlots.
 			self markAndTraceClassOf: objToScan.
@@ -9265,14 +9262,17 @@ SpurMemoryManager >> markLoopFrom: objOop [
 							         withInitialValue: field ].
 					((self isPermanent: field) not and: [self markAndShouldScan: field]) 
 					ifTrue: [
-						self push: field onObjStack: markStack.
 						((self rawNumSlotsOf: field) > self traceImmediatelySlotLimit
 							 and: [
-								 (numStrongSlots := self numStrongSlotsOfInephemeral: field)
-								 > self traceImmediatelySlotLimit ]) ifTrue: [
-							self
-								push: (self integerObjectOf: numStrongSlots)
-								onObjStack: markStack ] ] ] ].
+								 (fieldSlots := self numStrongSlotsOfInephemeral: field)
+								 > self traceImmediatelySlotLimit ])
+							ifTrue: [ "a large object is resumed, not scanned again, from the mark stack, so trace its class now."
+								self markAndTraceClassOf: field.
+								self push: field onObjStack: markStack.
+								self
+									push: (self integerObjectOf: fieldSlots)
+									onObjStack: markStack ]
+							ifFalse: [ self push: field onObjStack: markStack ] ] ] ].
 			objToScan := self popObjStack: markStack ].
 	objToScan notNil ] whileTrue
 ]

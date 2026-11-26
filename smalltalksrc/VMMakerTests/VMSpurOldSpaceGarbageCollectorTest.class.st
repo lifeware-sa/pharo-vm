@@ -14,6 +14,38 @@ VMSpurOldSpaceGarbageCollectorTest >> assertHashOf: anOop equals: aHash [
 	self assert: (memory hashBitsOf: anOop) equals: aHash
 ]
 
+{ #category : 'assertion' }
+VMSpurOldSpaceGarbageCollectorTest >> assertFullGCScansOnce: largeObjects [
+
+	"Run a full GC while recording the mark loop. Each slot of largeObjects must be fetched once by
+	 the mark loop and their class traced once. A number of slots popped from the mark stack must
+	 be followed by the large object it belongs to."
+
+	| recording fetched traced popped |
+	recording := self fullGCRecordingMarkLoop.
+	fetched := recording at: #fetched.
+	traced := recording at: #traced.
+	popped := recording at: #popped.
+	largeObjects do: [ :oop |
+		0 to: (memory numSlotsOf: oop) - 1 do: [ :index |
+			self
+				assert: (fetched occurrencesOf: oop -> index) = 1
+				description: [ 'slot ' , index printString , ' of a large object of '
+					, (memory numSlotsOf: oop) printString , ' slots fetched '
+					, (fetched occurrencesOf: oop -> index) printString , ' times' ] ].
+		self
+			assert: (traced occurrencesOf: oop) = 1
+			description: [ 'class of a large object of ' , (memory numSlotsOf: oop) printString
+				, ' slots traced ' , (traced occurrencesOf: oop) printString , ' times' ] ].
+	popped withIndexDo: [ :oop :position |
+		(memory isIntegerObject: oop) ifTrue: [ | large |
+			self assert: position < popped size.
+			large := popped at: position + 1.
+			self assert: (largeObjects includes: large).
+			self assert: ((memory integerValueOf: oop) between: 1 and: (memory numSlotsOf: large)) ] ].
+	self assert: memory validObjStacks
+]
+
 { #category : 'helpers' }
 VMSpurOldSpaceGarbageCollectorTest >> deltaFreeSpaceAfterGC: aBlock [ 
 	| initialSpace lastObjectToBeRemembered sizeOfLastObject |
@@ -33,6 +65,48 @@ VMSpurOldSpaceGarbageCollectorTest >> deltaFreeSpaceAfterGC: aBlock [
 	memory fullGC.
 	
 	^ initialSpace - sizeOfLastObject - memory totalFreeListBytes
+]
+
+{ #category : 'helpers' }
+VMSpurOldSpaceGarbageCollectorTest >> fullGCRecordingMarkLoop [
+
+	"Run a full GC with memory temporarily an instance of an anonymous subclass of its class that
+	 records, while marking, the slots fetched by the mark loop, the objects whose class is traced
+	 and the oops popped from the mark stack. The 32-bit simulator first collects a clone of the
+	 memory, which is not recorded. Answer the recording."
+
+	| recording originalClass recordingClass |
+	recording := Dictionary new
+		             at: #fetched put: Bag new;
+		             at: #traced put: Bag new;
+		             at: #popped put: OrderedCollection new;
+		             at: #memory put: memory;
+		             yourself.
+	originalClass := memory class.
+	recordingClass := originalClass newAnonymousSubclass.
+	recordingClass addClassVarNamed: #Recording.
+	recordingClass classPool at: #Recording put: recording.
+	recordingClass
+		compile: 'fetchPointer: fieldIndex ofObject: objOop
+	(marking and: [ self == (Recording at: #memory) and: [ thisContext sender selector == #markLoopFrom: ] ]) ifTrue: [
+		(Recording at: #fetched) add: objOop -> fieldIndex ].
+	^ super fetchPointer: fieldIndex ofObject: objOop';
+		compile: 'markAndTraceClassOf: objOop
+	(marking and: [ self == (Recording at: #memory) ]) ifTrue: [
+		(Recording at: #traced) add: objOop ].
+	^ super markAndTraceClassOf: objOop';
+		compile: 'popObjStack: objStack
+	| isMarkStack oop |
+	isMarkStack := marking and: [ self == (Recording at: #memory) and: [ objStack = markStack ] ].
+	oop := super popObjStack: objStack.
+	(isMarkStack and: [ oop notNil ]) ifTrue: [
+		(Recording at: #popped) addLast: oop ].
+	^ oop'.
+	[
+	recordingClass adoptInstance: memory.
+	memory fullGC ] ensure: [
+		memory class == recordingClass ifTrue: [ originalClass adoptInstance: memory ] ].
+	^ recording
 ]
 
 { #category : 'ephemerons' }
@@ -663,6 +737,90 @@ VMSpurOldSpaceGarbageCollectorTest >> testEphemeronsWithSameKeyNewSpaceOldSpace 
 
 	self assert: ({ ephemeronObjectOopOne. ephemeronObjectOopTwo } includes: memory dequeueMourner).
 	self assert: ({ ephemeronObjectOopOne. ephemeronObjectOopTwo } includes: memory dequeueMourner)
+]
+
+{ #category : 'tests - mark loop' }
+VMSpurOldSpaceGarbageCollectorTest >> testFullGCScansLargeObjectReachedFromSmallObjectOnce [
+
+	"A large object reached from a small object is pushed on the mark stack with its number of slots.
+	 It must be resumed from the mark stack after each unmarked referent, not scanned again."
+
+	| large root |
+	large := self newOldSpaceArrayWithSlots: memory traceImmediatelySlotLimit + 1.
+	#( 0 20 40 64 ) do: [ :index |
+		memory
+			storePointer: index
+			ofObject: large
+			withValue: (self newOldSpaceObjectWithSlots: 1) ].
+	root := self newOldSpaceArrayWithSlots: 1.
+	memory storePointer: 0 ofObject: root withValue: large.
+	self keepObjectInVMVariable1: root.
+
+	self assertFullGCScansOnce: { large }
+]
+
+{ #category : 'tests - mark loop' }
+VMSpurOldSpaceGarbageCollectorTest >> testFullGCScansLargeObjectSuspendedAfterPureBitsObjectOnce [
+
+	"Marking a pure bits object pushes its class if it is unmarked. A large object suspended
+	 after that must still be resumed, not scanned again."
+
+	| large root |
+	large := self newOldSpaceArrayWithSlots: memory traceImmediatelySlotLimit + 1.
+	#( 10 50 64 ) do: [ :index |
+		memory
+			storePointer: index
+			ofObject: large
+			withValue: (self newOldSpaceObjectWithSlots: 1) ].
+	memory
+		storePointer: 30
+		ofObject: large
+		withValue: (self new8BitIndexableOfSize: 4).
+	root := self newOldSpaceArrayWithSlots: 1.
+	memory storePointer: 0 ofObject: root withValue: large.
+	self keepObjectInVMVariable1: root.
+
+	self assertFullGCScansOnce: { large }
+]
+
+{ #category : 'tests - mark loop' }
+VMSpurOldSpaceGarbageCollectorTest >> testFullGCScansLargeRootOnce [
+
+	"A large root suspended at unmarked referents must be resumed, not scanned again."
+
+	| large |
+	large := self newOldSpaceArrayWithSlots: memory traceImmediatelySlotLimit + 1.
+	#( 0 20 40 64 ) do: [ :index |
+		memory
+			storePointer: index
+			ofObject: large
+			withValue: (self newOldSpaceObjectWithSlots: 1) ].
+	self keepObjectInVMVariable1: large.
+
+	self assertFullGCScansOnce: { large }
+]
+
+{ #category : 'tests - mark loop' }
+VMSpurOldSpaceGarbageCollectorTest >> testFullGCScansNestedLargeObjectsOnce [
+
+	"Large objects suspended within large objects must each be resumed, not scanned again."
+
+	| outer middle inner root |
+	outer := self newOldSpaceArrayWithSlots: 80.
+	middle := self newOldSpaceArrayWithSlots: 70.
+	inner := self newOldSpaceArrayWithSlots: 66.
+	memory
+		storePointer: 79 ofObject: outer withValue: (self newOldSpaceObjectWithSlots: 1);
+		storePointer: 40 ofObject: outer withValue: middle;
+		storePointer: 69 ofObject: middle withValue: inner;
+		storePointer: 10 ofObject: middle withValue: (self newOldSpaceObjectWithSlots: 1);
+		storePointer: 65 ofObject: inner withValue: (self newOldSpaceObjectWithSlots: 1);
+		storePointer: 33 ofObject: inner withValue: (self newOldSpaceObjectWithSlots: 1).
+	root := self newOldSpaceArrayWithSlots: 1.
+	memory storePointer: 0 ofObject: root withValue: outer.
+	self keepObjectInVMVariable1: root.
+
+	self assertFullGCScansOnce: { outer. middle. inner }
 ]
 
 { #category : 'tests' }
