@@ -13,6 +13,31 @@ ComposedImageWriter class >> declareCVarsIn: aCCodeGenerator [
 	"currently Slang lacks some support for subclasses: prevent <sys/stat.h> to be include a second time during C code generation as the superclass already includes it but declareCVarsIn: is called for each concrete class logging the warning inside addHeaderFile: method"
 ]
 
+{ #category : 'perm - space' }
+ComposedImageWriter >> ensureDeletePermanentSpaceData: imageFileName [
+
+	"Delete the perm space data file of the image before writing a new one, instead of truncating it.
+	 VMs started on this image may map that file, this VM too: Windows refuses to truncate a mapped
+	 file (ERROR_USER_MAPPED_FILE), and on Unix truncating it changes the pages that their MAP_PRIVATE
+	 views have not copied yet. A deleted file stays alive, unchanged, for the processes that map it."
+
+	<inline: false>
+	<var: #fileName type: #'char *'>
+	<var: #file type: #sqImageFile>
+	| fileName file |
+	"A statement of its own: permSpaceDataFileInImage: is inlined and does not translate as an argument."
+	fileName := self permSpaceDataFileInImage: imageFileName.
+	"Not fileExists: first: it uses stat, which fails on Windows for files of 2 GB or more.
+	 If the delete fails, the file is in the way only if it is there."
+	(self unlink: fileName) = 0 ifFalse: [
+		"In simulation unlink: fails only when the file is not there."
+		file := self cCode: [ self sqImageFile: fileName Open: 'rb' ] inSmalltalk: [ nil ].
+		file ifNotNil: [
+			self sqImageFileClose: file.
+			self logError: 'Error deleting %s' _: fileName.
+			coInterpreter primitiveFail ] ]
+]
+
 { #category : 'writing' }
 ComposedImageWriter >> ensureDeleteSegments: imageFileName [ 
 	
@@ -117,6 +142,10 @@ ComposedImageWriter >> writeImageFile: imageFileName fromHeader: header [
 	self logDebug: 'Writing snapshot %s' _: imageFileName.
 
 	self createImageDirectory: imageFileName.
+
+	"Before anything is written: if the old perm data cannot be deleted, the image stays as it was."
+	self ensureDeletePermanentSpaceData: imageFileName.
+	coInterpreter failed ifTrue: [ ^ self ].
 
 	self writeHeaderFile: imageFileName fromHeader: header.
 
