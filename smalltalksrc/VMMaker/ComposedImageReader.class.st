@@ -202,15 +202,17 @@ ComposedImageReader >> mapPermanentSpaceFromImage: imageFileName at: baseAddress
 
 	"Map the perm space data file copy-on-write at its saved address instead of reading it,
 	 so that VMs started on the same image share its pages until they write them.
-	 Opt-in: the platform says yes (PHARO_MAP_PERM_SPACE=1) and perm space is not allocated yet.
-	 The mapped space is exactly full: extending it needs memory adjacent to the view.
+	 Only if the platform says yes (sqShouldMapPermSpace) and perm space is not allocated yet.
+	 The platform gives the end of the perm space region: it can be after the end of the data,
+	 so that the perm space can grow in place.
 	 Answer whether the file is mapped; if not, the caller reads it as before."
 
 	<inline: false>
 	<var: #baseAddress type: #'void*'>
 	<var: #dataSize type: #'size_t'>
 	<var: #fileName type: #'char *'>
-	| fileName |
+	<var: #permSpaceLimit type: #usqInt>
+	| fileName permSpaceLimit |
 
 	self simulationOnly: [ ^ false ].
 
@@ -219,11 +221,13 @@ ComposedImageReader >> mapPermanentSpaceFromImage: imageFileName at: baseAddress
 
 	"A statement of its own: permSpaceDataFileInImage: is inlined and does not translate as an argument."
 	fileName := self permSpaceDataFileInImage: imageFileName.
-	(self sqMapPermSpaceFile: fileName _: baseAddress _: dataSize) ifFalse: [ ^ false ].
+	permSpaceLimit := 0.
+	(self sqMapPermSpaceFile: fileName _: baseAddress _: dataSize _: (self addressOf: permSpaceLimit))
+		ifFalse: [ ^ false ].
 
 	objectMemory getMemoryMap
 		permSpaceStart: (self cCoerceSimple: baseAddress to: #sqInt);
-		permSpaceEnd: (self cCoerceSimple: baseAddress to: #sqInt) + dataSize.
+		permSpaceEnd: (self cCoerceSimple: permSpaceLimit to: #sqInt).
 	objectMemory setPermSpaceFreeStart: (self cCoerceSimple: baseAddress to: #sqInt) + dataSize.
 	^ true
 ]

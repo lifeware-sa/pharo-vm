@@ -202,22 +202,19 @@ sqAllocateMemorySegmentOfSizeAboveAllocatedSizeInto(sqInt size, void *minAddress
 }
 
 /* Copy-on-write mapping of the perm space data file of a composed image.
- * Opt-in with the environment variable PHARO_MAP_PERM_SPACE=1.
- * The pages are shared with every process mapping the same file until a process writes one;
- * the write then copies that page into the process (FILE_MAP_COPY). Note that Windows charges
- * commit for the whole view, even for pages that are still shared.
+ * The pages are shared with every process mapping the same file until a process writes one.
+ * The view is mapped read-only, which charges almost no commit (a FILE_MAP_COPY view would charge
+ * commit for all its pages), and a write fault in it makes the page copy-on-write (PAGE_WRITECOPY,
+ * which charges commit for that page only), then the write is retried. Writes by the kernel
+ * (e.g. ReadFile into a perm object) do not fault: they fail with ERROR_NOACCESS, see
+ * sqEnsurePermWritable. If the file cannot be mapped, the VM reads it as before.
  */
 int
 sqShouldMapPermSpace(void)
 {
-	char *value = getenv("PHARO_MAP_PERM_SPACE");
-	return value != NULL && (value[0] == '1' || value[0] == '2');
+	return 1;
 }
 
-/* PHARO_MAP_PERM_SPACE=2: the view is mapped read-only, which charges almost no commit, and a
- * write fault in it makes the page copy-on-write (PAGE_WRITECOPY, which charges commit for that
- * page only), then the write is retried. Writes by the kernel (e.g. ReadFile into a perm object)
- * do not fault: they fail with ERROR_NOACCESS. */
 static char *permMapStart = NULL;
 static char *permMapEnd = NULL;
 static volatile LONG permMapWriteFaults = 0;
@@ -264,13 +261,39 @@ sqEnsurePermWritable(void *start, size_t size)
 		*page = *page;
 }
 
+/* Answer whether the perm space is the read-only view: machine code writing into it then takes a
+ * write fault on the Smalltalk stack (see osCogStackPageHeadroom). */
 int
-sqMapPermSpaceFile(char *fileName, void *address, size_t size)
+sqPermSpaceIsMapped(void)
+{
+	return permMapStart != NULL;
+}
+
+/* Map the perm space file at exactly address. Answer 1 and store the end of the perm space region
+ * in *endPointer, or answer 0 if the file is not mapped (the VM then reads it).
+ * The perm space must be able to grow in place, by allocating exactly at its end, and Windows
+ * allocates only at multiples of the allocation granularity (64 KB). So only the largest prefix of
+ * the file that is a multiple of it is mapped; the rest of the file (less than 64 KB) is read
+ * into private memory allocated right after the view, up to the next multiple. */
+int
+sqMapPermSpaceFile(char *fileName, void *address, size_t size, usqInt *endPointer)
 {
 	HANDLE file, mapping;
 	void *view;
-	char *mode = getenv("PHARO_MAP_PERM_SPACE");
-	int lazyCommit = mode != NULL && mode[0] == '2';
+	SYSTEM_INFO info;
+	size_t granularity, viewSize, tailSize, tailAllocSize;
+	char *tail;
+	DWORD bytesRead;
+	LARGE_INTEGER offset;
+
+	GetSystemInfo(&info);
+	granularity = info.dwAllocationGranularity;
+	viewSize = size & ~(granularity - 1);
+	tailSize = size - viewSize;
+	tailAllocSize = (tailSize + granularity - 1) & ~(granularity - 1);
+	tail = (char *) address + viewSize;
+	if (viewSize == 0)
+		return 0;
 
 	file = CreateFileA(fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE) {
@@ -278,25 +301,22 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 		return 0;
 	}
 	mapping = CreateFileMappingA(file, NULL, PAGE_WRITECOPY, 0, 0, NULL);
-	CloseHandle(file);
 	if (mapping == NULL) {
 		logErrorFromGetLastError("Could not create the perm space file mapping");
+		CloseHandle(file);
 		return 0;
 	}
-	if (lazyCommit) {
-		/* Install the handler before the view exists, so that no write can miss it. */
-		permMapStart = (char *) address;
-		/* The view covers whole pages: the last page goes past size (zero-filled), and the VM
-		 * writes there too (permSpaceFreeStart is address + size). */
-		permMapEnd = (char *) (((usqIntptr_t) address + size + 4095) & ~(usqIntptr_t) 4095);
-		if (AddVectoredExceptionHandler(1, permSpaceWriteFault) == NULL) {
-			logErrorFromGetLastError("Could not install the perm space write fault handler");
-			CloseHandle(mapping);
-			permMapStart = permMapEnd = NULL;
-			return 0;
-		}
+	/* Install the handler before the view exists, so that no write can miss it. */
+	permMapStart = (char *) address;
+	permMapEnd = (char *) address + viewSize;
+	if (AddVectoredExceptionHandler(1, permSpaceWriteFault) == NULL) {
+		logErrorFromGetLastError("Could not install the perm space write fault handler");
+		CloseHandle(mapping);
+		CloseHandle(file);
+		permMapStart = permMapEnd = NULL;
+		return 0;
 	}
-	view = MapViewOfFileEx(mapping, lazyCommit ? FILE_MAP_READ : FILE_MAP_COPY, 0, 0, size, address);
+	view = MapViewOfFileEx(mapping, FILE_MAP_READ, 0, 0, viewSize, address);
 	/* The view keeps the mapping alive. */
 	CloseHandle(mapping);
 	if (view != address) {
@@ -306,12 +326,34 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 		/* The handler stays installed but never matches an empty range. */
 		permMapStart = permMapEnd = NULL;
 		logErrorFromGetLastError("Could not map the perm space file at its address");
+		CloseHandle(file);
 		return 0;
 	}
-	logInfo("Perm space mapped %s at %p (%lld bytes) from %s",
-		lazyCommit ? "read-only, copy-on-write on first write" : "copy-on-write",
-		address, (long long) size, fileName);
+	if (tailSize > 0) {
+		offset.QuadPart = (LONGLONG) viewSize;
+		if (!sqAllocateMemoryExactlyAt(tail, tailAllocSize)) {
+			logErrorFromGetLastError("Could not allocate the end of the perm space after its view");
+			goto unmap;
+		}
+		if (!SetFilePointerEx(file, offset, NULL, FILE_BEGIN)
+		 || !ReadFile(file, tail, (DWORD) tailSize, &bytesRead, NULL)
+		 || bytesRead != tailSize) {
+			logErrorFromGetLastError("Could not read the end of the perm space file");
+			VirtualFree(tail, 0, MEM_RELEASE);
+			goto unmap;
+		}
+	}
+	CloseHandle(file);
+	logInfo("Perm space mapped read-only, copy-on-write on first write at %p (%lld of %lld bytes) from %s",
+		address, (long long) viewSize, (long long) size, fileName);
+	*endPointer = (usqInt) (tail + tailAllocSize);
 	return 1;
+
+unmap:
+	UnmapViewOfFile(view);
+	permMapStart = permMapEnd = NULL;
+	CloseHandle(file);
+	return 0;
 }
 
 /* Deallocate a region of memory previously allocated by

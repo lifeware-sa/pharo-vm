@@ -83,12 +83,18 @@ void setMaxStacksToPrint(sqInt anInteger);
 
 #define allocateMemoryBaseAddress(desiredSize, baseAddress) sqAllocateMemory(desiredSize, desiredSize, baseAddress)
 
-/* Copy-on-write mapping of a composed image's perm space data file (opt-in, PHARO_MAP_PERM_SPACE=1).
- * sqMapPermSpaceFile maps the file private (copy-on-write) at exactly address; answers 1 on success. */
+/* Copy-on-write mapping of a composed image's perm space data file.
+ * sqMapPermSpaceFile maps the file private (copy-on-write) at exactly address and answers 1, or 0 if
+ * the file is not mapped. It stores in *endPointer the end of the perm space region: at or after
+ * address + size, where the perm space can grow in place. */
 int sqShouldMapPermSpace(void);
-int sqMapPermSpaceFile(char *fileName, void *address, size_t size);
-/* Call before the kernel writes into object memory (ReadFile, recv...): with PHARO_MAP_PERM_SPACE=2 the
- * perm space view is read-only and a kernel write into it fails instead of faulting. */
+int sqMapPermSpaceFile(char *fileName, void *address, size_t size, usqInt *endPointer);
+#ifdef _WIN32
+/* Answer whether the perm space is the read-only view (Windows maps it read-only, writable on fault). */
+int sqPermSpaceIsMapped(void);
+#endif
+/* Call before the kernel writes into object memory (ReadFile, recv...): on Windows the perm space
+ * view is read-only and a kernel write into it fails instead of faulting. */
 EXPORT(void) sqEnsurePermWritable(void *start, size_t size);
 /* Allocate (read-write) exactly [address, address + size) or nothing, never over an existing mapping.
  * Answers 1 on success, 0 otherwise. On Windows address must be a multiple of the allocation granularity (64 KB). */

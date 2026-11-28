@@ -532,18 +532,16 @@ osCogStackPageHeadroom()
 {
 	if (!stackPageHeadroom) {
 		stackPageHeadroom = getRedZoneSize() + 1024;
-#ifdef _WIN32
-		{
-			/* PHARO_MAP_PERM_SPACE=2: machine code that writes into the read-only perm space view
-			 * takes an access violation on the Smalltalk stack page it runs on. Its dispatch
-			 * (CONTEXT record, RtlDispatchException, the vectored handler, VirtualProtect)
-			 * needs a few KB below the stack pointer; give it room. */
-			char *mode = getenv("PHARO_MAP_PERM_SPACE");
-			if (mode != NULL && mode[0] == '2')
-				stackPageHeadroom += 16 * 1024;
-		}
-#endif
 	}
+#ifdef _WIN32
+	/* Machine code that writes into the read-only perm space view takes an access violation on
+	 * the Smalltalk stack page it runs on. Its dispatch (CONTEXT record, RtlDispatchException, the
+	 * vectored handler, VirtualProtect) needs a few KB below the stack pointer; give it room.
+	 * Not cached: the first call (vm_init) comes before the image, hence the perm space, is loaded.
+	 * The stack pages are sized after the load, and the mapping does not change afterwards. */
+	if (sqPermSpaceIsMapped())
+		return stackPageHeadroom + 16 * 1024;
+#endif
 	return stackPageHeadroom;
 }
 

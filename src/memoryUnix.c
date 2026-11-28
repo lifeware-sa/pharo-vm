@@ -224,23 +224,27 @@ sqDeallocateMemorySegmentAtOfSize(void *addr, sqInt sz)
 
 
 /* Copy-on-write mapping of the perm space data file of a composed image.
- * Opt-in with the environment variable PHARO_MAP_PERM_SPACE=1 or 2.
  * The pages are shared with every process mapping the same file until a process writes one.
- * Mode 2 (a read-only view made writable on fault) exists on Windows, which charges commit for
- * every page of a copy-on-write view; Unix does not, so 2 maps the same way as 1.
+ * (Windows maps a read-only view made writable on fault, because it charges commit for every page
+ * of a copy-on-write view; Unix does not.) If the file cannot be mapped, the VM reads it as before.
  */
 int
 sqShouldMapPermSpace(void)
 {
-	char *value = getenv("PHARO_MAP_PERM_SPACE");
-	return value != NULL && (value[0] == '1' || value[0] == '2');
+	return 1;
 }
 
+/* Map the perm space file at exactly address. Answer 1 and store the end of the perm space region
+ * in *endPointer, or answer 0 if the file is not mapped (the VM then reads it).
+ * The view ends on a page boundary, so that the perm space can grow in place by allocating exactly
+ * at its end: the end of the last page, past the end of the file, reads as zeros. */
 int
-sqMapPermSpaceFile(char *fileName, void *address, size_t size)
+sqMapPermSpaceFile(char *fileName, void *address, size_t size, usqInt *endPointer)
 {
 	int fd;
 	void *view;
+	size_t pageSize = (size_t) sysconf(_SC_PAGESIZE);
+	size = (size + pageSize - 1) & ~(pageSize - 1);
 
 	fd = open(fileName, O_RDONLY);
 	if (fd < 0) {
@@ -260,6 +264,7 @@ sqMapPermSpaceFile(char *fileName, void *address, size_t size)
 		return 0;
 	}
 	logInfo("Perm space mapped copy-on-write at %p (%lld bytes) from %s", address, (long long) size, fileName);
+	*endPointer = (usqInt) address + size;
 	return 1;
 }
 
